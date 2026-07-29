@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF Chat RAG</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f5f5; color: #1a1a1a; min-height: 100vh;
+        }
+        .container { max-width: 800px; margin: 0 auto; padding: 2rem 1rem; }
+        header { text-align: center; margin-bottom: 2rem; }
+        header h1 { font-size: 1.8rem; font-weight: 700; }
+        header p { color: #666; margin-top: 0.3rem; }
+
+        /* Upload area */
+        .upload-area {
+            border: 2px dashed #ccc; border-radius: 12px; padding: 2.5rem;
+            text-align: center; cursor: pointer; transition: all 0.2s;
+            background: white;
+        }
+        .upload-area:hover, .upload-area.dragover {
+            border-color: #2563eb; background: #f0f4ff;
+        }
+        .upload-area.has-file {
+            border-color: #16a34a; background: #f0fdf4;
+        }
+        .upload-icon { font-size: 2.5rem; margin-bottom: 0.5rem; }
+        .upload-label { font-size: 1rem; color: #2563eb; font-weight: 500; }
+        .upload-hint { font-size: 0.85rem; color: #888; margin-top: 0.3rem; }
+        .file-info { display: none; margin-top: 0.5rem; font-size: 0.9rem; color: #16a34a; }
+
+        /* Processing state */
+        .processing {
+            display: none; align-items: center; gap: 0.5rem;
+            margin-top: 1rem; padding: 0.8rem; background: #f0f4ff;
+            border-radius: 8px; font-size: 0.9rem;
+        }
+        .spinner {
+            width: 18px; height: 18px; border: 2px solid #ccc;
+            border-top-color: #2563eb; border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* Chat area */
+        .chat-section { display: none; margin-top: 1.5rem; }
+        .doc-badge {
+            display: inline-flex; align-items: center; gap: 0.4rem;
+            padding: 0.4rem 0.8rem; background: #e8f5e9; border-radius: 20px;
+            font-size: 0.85rem; color: #2e7d32; margin-bottom: 1rem;
+        }
+        .doc-badge button {
+            background: none; border: none; color: #2e7d32;
+            cursor: pointer; font-size: 1rem; padding: 0;
+        }
+        .chat-box {
+            background: white; border-radius: 12px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.08); overflow: hidden;
+        }
+        .messages {
+            height: 400px; overflow-y: auto; padding: 1rem;
+        }
+        .message { margin-bottom: 1rem; display: flex; }
+        .message.user { justify-content: flex-end; }
+        .message.bot { justify-content: flex-start; }
+        .message .bubble {
+            max-width: 80%; padding: 0.7rem 1rem; border-radius: 12px;
+            line-height: 1.5; font-size: 0.95rem;
+        }
+        .message.user .bubble {
+            background: #2563eb; color: white;
+            border-bottom-right-radius: 4px;
+        }
+        .message.bot .bubble {
+            background: #f0f0f0; color: #1a1a1a;
+            border-bottom-left-radius: 4px;
+        }
+        .sources {
+            margin-top: 0.5rem; font-size: 0.8rem; color: #666;
+        }
+        .sources span {
+            display: inline-block; background: #e8e8e8;
+            padding: 0.15rem 0.5rem; border-radius: 4px; margin-right: 0.3rem;
+        }
+        .input-area {
+            display: flex; gap: 0.5rem; padding: 0.8rem; border-top: 1px solid #eee;
+        }
+        .input-area input {
+            flex: 1; padding: 0.7rem 1rem; border: 1px solid #ddd;
+            border-radius: 8px; font-size: 0.95rem; outline: none;
+        }
+        .input-area input:focus { border-color: #2563eb; }
+        .input-area button {
+            padding: 0.7rem 1.2rem; background: #2563eb; color: white;
+            border: none; border-radius: 8px; font-size: 0.95rem;
+            cursor: pointer; transition: background 0.15s;
+        }
+        .input-area button:hover { background: #1d4ed8; }
+        .input-area button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .loading-dots::after {
+            content: ''; animation: dots 1.5s steps(4, end) infinite;
+        }
+        @keyframes dots {
+            0% { content: ''; }
+            25% { content: '.'; }
+            50% { content: '..'; }
+            75% { content: '...'; }
+        }
+
+        .error { color: #dc2626; font-size: 0.9rem; margin-top: 0.5rem; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>PDF Chat RAG</h1>
+            <p>Upload a PDF and ask questions about it</p>
+        </header>
+
+        <!-- Upload -->
+        <div class="upload-area" id="uploadArea" onclick="document.getElementById('fileInput').click()">
+            <div class="upload-icon">📄</div>
+            <div class="upload-label">Click to upload or drag a PDF here</div>
+            <div class="upload-hint">Max 20MB</div>
+            <div class="file-info" id="fileInfo"></div>
+            <input type="file" id="fileInput" accept=".pdf" hidden>
+        </div>
+
+        <div class="processing" id="processing">
+            <div class="spinner"></div>
+            <span>Processing PDF — extracting text and building vector index...</span>
+        </div>
+        <div class="error" id="error"></div>
+
+        <!-- Chat -->
+        <div class="chat-section" id="chatSection">
+            <div class="doc-badge" id="docBadge">
+                <span>📎</span>
+                <span id="docName"></span>
+                <button onclick="resetUpload()" title="Upload a different PDF">✕</button>
+            </div>
+            <div class="chat-box">
+                <div class="messages" id="messages">
+                    <div class="message bot">
+                        <div class="bubble">Upload a PDF to get started. I'll answer questions based on what's in the document.</div>
+                    </div>
+                </div>
+                <div class="input-area">
+                    <input type="text" id="chatInput" placeholder="Ask a question about the document..." disabled>
+                    <button id="sendBtn" disabled onclick="sendMessage()">Send</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentDocId = null;
+
+        // Drag and drop
+        const uploadArea = document.getElementById('uploadArea');
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault(); uploadArea.classList.add('dragover');
+        });
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault(); uploadArea.classList.remove('dragover');
+            const file = e.dataTransfer.files[0];
+            if (file) uploadFile(file);
+        });
+
+        document.getElementById('fileInput').addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) uploadFile(file);
+        });
+
+        async function uploadFile(file) {
+            if (!file.name.endsWith('.pdf')) {
+                showError('Only PDF files are supported');
+                return;
+            }
+            if (file.size > 20 * 1024 * 1024) {
+                showError('File is too large (max 20MB)');
+                return;
+            }
+
+            hideError();
+            document.getElementById('fileInfo').textContent = `📄 ${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)`;
+            document.getElementById('fileInfo').style.display = 'block';
+            uploadArea.classList.add('has-file');
+            document.getElementById('processing').style.display = 'flex';
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                const res = await fetch('/upload', { method: 'POST', body: formData });
+                if (!res.ok) {
+                    const err = await res.json();
+                    throw new Error(err.detail || 'Upload failed');
+                }
+                const data = await res.json();
+                currentDocId = data.doc_id;
+                document.getElementById('processing').style.display = 'none';
+                document.getElementById('docName').textContent = `${file.name} (${data.pages} pages, ${data.chunks} chunks)`;
+                document.getElementById('chatSection').style.display = 'block';
+                document.getElementById('chatInput').disabled = false;
+                document.getElementById('sendBtn').disabled = false;
+                addBotMessage(`Processed ${file.name} — ${data.pages} pages extracted into ${data.chunks} chunks. Ask me anything about it.`);
+                document.getElementById('chatInput').focus();
+            } catch (err) {
+                document.getElementById('processing').style.display = 'none';
+                showError(err.message);
+            }
+        }
+
+        async function sendMessage() {
+            const input = document.getElementById('chatInput');
+            const query = input.value.trim();
+            if (!query || !currentDocId) return;
+
+            input.value = '';
+            addUserMessage(query);
+
+            const sendBtn = document.getElementById('sendBtn');
+            sendBtn.disabled = true;
+            input.disabled = true;
+
+            // Show loading
+            const msgDiv = document.createElement('div');
+            msgDiv.className = 'message bot';
+            msgDiv.innerHTML = '<div class="bubble">Thinking<span class="loading-dots"></span></div>';
+            document.getElementById('messages').appendChild(msgDiv);
+            msgDiv.scrollIntoView({ behavior: 'smooth' });
+
+            try {
+                const res = await fetch('/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query, doc_id: currentDocId, top_k: 3 }),
+                });
+                if (!res.ok) {
+                    const err = await res.json();
+                    throw new Error(err.detail || 'Chat failed');
+                }
+                const data = await res.json();
+
+                // Replace loading with answer
+                let sourcesHtml = '';
+                if (data.sources && data.sources.length > 0) {
+                    sourcesHtml = '<div class="sources">Pages: ' +
+                        data.sources.map(s => `<span>p.${s.page_num}</span>`).join('') +
+                        '</div>';
+                }
+                msgDiv.innerHTML = `<div class="bubble">${escapeHtml(data.answer)}${sourcesHtml}</div>`;
+            } catch (err) {
+                msgDiv.innerHTML = `<div class="bubble" style="color:#dc2626;">Error: ${escapeHtml(err.message)}</div>`;
+            }
+
+            sendBtn.disabled = false;
+            input.disabled = false;
+            input.focus();
+        }
+
+        function addUserMessage(text) {
+            const div = document.createElement('div');
+            div.className = 'message user';
+            div.innerHTML = `<div class="bubble">${escapeHtml(text)}</div>`;
+            document.getElementById('messages').appendChild(div);
+            div.scrollIntoView({ behavior: 'smooth' });
+        }
+
+        function addBotMessage(text) {
+            const div = document.createElement('div');
+            div.className = 'message bot';
+            div.innerHTML = `<div class="bubble">${escapeHtml(text)}</div>`;
+            document.getElementById('messages').appendChild(div);
+            div.scrollIntoView({ behavior: 'smooth' });
+        }
+
+        function resetUpload() {
+            currentDocId = null;
+            document.getElementById('chatSection').style.display = 'none';
+            document.getElementById('fileInput').value = '';
+            document.getElementById('fileInfo').style.display = 'none';
+            document.getElementById('fileInfo').textContent = '';
+            uploadArea.classList.remove('has-file');
+            document.getElementById('messages').innerHTML = `
+                <div class="message bot">
+                    <div class="bubble">Upload a PDF to get started. I'll answer questions based on what's in the document.</div>
+                </div>
+            `;
+        }
+
+        function showError(msg) {
+            document.getElementById('error').textContent = msg;
+        }
+        function hideError() {
+            document.getElementById('error').textContent = '';
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Enter key to send
+        document.getElementById('chatInput').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') sendMessage();
+        });
+    </script>
+</body>
+</html>

@@ -7,14 +7,20 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from .embeddings import VectorStore
-from .models import ChatRequest, ChatResponse, UploadResponse
+from .models import ChatRequest, ChatResponse, Source, UploadResponse
 from .processor import chunk_text, extract_text
 
 load_dotenv()
 
 app = FastAPI(title="PDF Chat RAG", version="0.1.0")
+
+# Serve frontend static files
+frontend_dir = Path(__file__).parent.parent / "frontend"
+if frontend_dir.exists():
+    app.mount("/", StaticFiles(directory=str(frontend_dir), html=True), name="frontend")
 
 app.add_middleware(
     CORSMiddleware,
@@ -108,7 +114,7 @@ async def chat(req: ChatRequest):
     return ChatResponse(
         answer=answer,
         sources=[
-            {"page_num": r["page_num"], "text": r["text"][:200], "score": round(r["score"], 3)}
+            Source(page_num=r["page_num"], text=r["text"][:200], score=round(r["score"], 3))
             for r in results
         ],
     )
