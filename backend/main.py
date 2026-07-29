@@ -1,6 +1,5 @@
 """PDF Chat RAG — FastAPI backend."""
 
-import os
 import uuid
 from pathlib import Path
 
@@ -8,6 +7,10 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+
+from .embeddings import VectorStore
+from .models import ChatRequest, ChatResponse, UploadResponse
+from .processor import chunk_text, extract_text
 
 load_dotenv()
 
@@ -27,13 +30,23 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 ALLOWED_EXTENSIONS = {".pdf"}
 MAX_FILE_SIZE = 20 * 1024 * 1024  # 20MB
 
+# Lazy-loaded vector store — first upload triggers model download
+store: VectorStore | None = None
+
+
+def get_store() -> VectorStore:
+    global store
+    if store is None:
+        store = VectorStore()
+    return store
+
 
 @app.get("/health")
 async def health():
     return {"status": "ok"}
 
 
-@app.post("/upload")
+@app.post("/upload", response_model=UploadResponse)
 async def upload_pdf(file: UploadFile = File(...)):
     ext = Path(file.filename or "").suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:
@@ -47,7 +60,55 @@ async def upload_pdf(file: UploadFile = File(...)):
     save_path = UPLOAD_DIR / f"{doc_id}.pdf"
     save_path.write_bytes(content)
 
-    return JSONResponse(
-        {"doc_id": doc_id, "filename": file.filename, "size": len(content)},
-        status_code=201,
+    # Extract + chunk + embed
+    try:
+        pages = extract_text(save_path)
+        if not pages:
+            raise HTTPException(400, "Could not extract any text from this PDF")
+
+        chunks = chunk_text(pages)
+        vs = get_store()
+        chunk_count = vs.add_document(doc_id, chunks)
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Clean up on failure
+        save_path.unlink(missing_ok=True)
+        raise HTTPException(500, f"Failed to process PDF: {str(e)}")
+
+    return UploadResponse(
+        doc_id=doc_id,
+        filename=file.filename or "document.pdf",
+        size=len(content),
+        chunks=chunk_count,
+        pages=len(pages),
+    )
+
+
+@app.post("/chat", response_model=ChatResponse)
+async def chat(req: ChatRequest):
+    if not req.query.strip():
+        raise HTTPException(400, "Query cannot be empty")
+
+    vs = get_store()
+    results = vs.search(req.query, top_k=req.top_k or 3)
+
+    if not results:
+        return ChatResponse(answer="No relevant content found in the uploaded document.", sources=[])
+
+    context = "\n\n".join(
+        f"[Page {r['page_num']}] {r['text']}" for r in results
+    )
+
+    # Import here to avoid circular dependency with models
+    from .llm import ask_groq
+
+    answer = ask_groq(req.query, context)
+
+    return ChatResponse(
+        answer=answer,
+        sources=[
+            {"page_num": r["page_num"], "text": r["text"][:200], "score": round(r["score"], 3)}
+            for r in results
+        ],
     )
