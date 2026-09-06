@@ -26,3 +26,9 @@ class Source(BaseModel):
 class ChatResponse(BaseModel):
     answer: str
     sources: list[Source]
+
+
+class DeleteResponse(BaseModel):
+    doc_id: str
+    deleted: bool
+    message: str

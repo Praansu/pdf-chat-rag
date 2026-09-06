@@ -112,6 +112,25 @@
         }
 
         .error { color: #dc2626; font-size: 0.9rem; margin-top: 0.5rem; }
+
+        /* Document list */
+        .doc-list { margin-top: 1.5rem; }
+        .doc-list h3 { font-size: 0.9rem; color: #666; margin-bottom: 0.5rem; }
+        .doc-item {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 0.7rem 1rem; background: white; border-radius: 8px;
+            margin-bottom: 0.5rem; box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+        }
+        .doc-item-info { display: flex; flex-direction: column; gap: 0.2rem; }
+        .doc-item-name { font-weight: 500; font-size: 0.9rem; }
+        .doc-item-meta { font-size: 0.75rem; color: #888; }
+        .doc-item-delete {
+            background: #fee2e2; color: #dc2626; border: none;
+            padding: 0.4rem 0.8rem; border-radius: 6px; font-size: 0.8rem;
+            cursor: pointer; transition: background 0.15s;
+        }
+        .doc-item-delete:hover { background: #fecaca; }
+        .doc-item-delete:disabled { opacity: 0.5; cursor: not-allowed; }
     </style>
 </head>
 <body>
@@ -135,6 +154,12 @@
             <span>Processing PDF — extracting text and building vector index...</span>
         </div>
         <div class="error" id="error"></div>
+
+        <!-- Document list -->
+        <div class="doc-list" id="docList" style="display: none;">
+            <h3>📚 Your Documents</h3>
+            <div id="docItems"></div>
+        </div>
 
         <!-- Chat -->
         <div class="chat-section" id="chatSection">
@@ -213,6 +238,7 @@
                 document.getElementById('sendBtn').disabled = false;
                 addBotMessage(`Processed ${file.name} — ${data.pages} pages extracted into ${data.chunks} chunks. Ask me anything about it.`);
                 document.getElementById('chatInput').focus();
+                await loadDocuments();
             } catch (err) {
                 document.getElementById('processing').style.display = 'none';
                 showError(err.message);
@@ -297,6 +323,63 @@
             `;
         }
 
+        async function loadDocuments() {
+            try {
+                const res = await fetch('/documents');
+                if (!res.ok) return;
+                const data = await res.json();
+                const itemsDiv = document.getElementById('docItems');
+                const listDiv = document.getElementById('docList');
+                
+                if (data.documents && data.documents.length > 0) {
+                    itemsDiv.innerHTML = data.documents.map(doc => `
+                        <div class="doc-item">
+                            <div class="doc-item-info">
+                                <span class="doc-item-name">${escapeHtml(doc.filename)}</span>
+                                <span class="doc-item-meta">${doc.chunks} chunks · ${(doc.size / 1024).toFixed(1)} KB</span>
+                            </div>
+                            <button class="doc-item-delete" onclick="deleteDocument('${doc.doc_id}')" title="Delete document">
+                                🗑️ Delete
+                            </button>
+                        </div>
+                    `).join('');
+                    listDiv.style.display = 'block';
+                } else {
+                    listDiv.style.display = 'none';
+                }
+            } catch (err) {
+                console.error('Failed to load documents:', err);
+            }
+        }
+
+        async function deleteDocument(docId) {
+            if (!confirm('Delete this document and all its embeddings? This cannot be undone.')) return;
+            
+            const btn = event.target;
+            btn.disabled = true;
+            btn.textContent = 'Deleting...';
+            
+            try {
+                const res = await fetch(`/documents/${docId}`, { method: 'DELETE' });
+                if (!res.ok) {
+                    const err = await res.json();
+                    throw new Error(err.detail || 'Delete failed');
+                }
+                
+                // If we deleted the current document, reset chat
+                if (currentDocId === docId) {
+                    resetUpload();
+                }
+                
+                // Reload document list
+                await loadDocuments();
+            } catch (err) {
+                showError(err.message);
+                btn.disabled = false;
+                btn.textContent = '🗑️ Delete';
+            }
+        }
+
         function showError(msg) {
             document.getElementById('error').textContent = msg;
         }
@@ -314,6 +397,9 @@
         document.getElementById('chatInput').addEventListener('keydown', (e) => {
             if (e.key === 'Enter') sendMessage();
         });
+
+        // Load documents on startup
+        loadDocuments();
     </script>
 </body>
 </html>

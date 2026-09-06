@@ -10,17 +10,12 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .embeddings import VectorStore
-from .models import ChatRequest, ChatResponse, Source, UploadResponse
+from .models import ChatRequest, ChatResponse, Source, UploadResponse, DeleteResponse
 from .processor import chunk_text, extract_text
 
 load_dotenv()
 
 app = FastAPI(title="PDF Chat RAG", version="0.1.0")
-
-# Serve frontend static files
-frontend_dir = Path(__file__).parent.parent / "frontend"
-if frontend_dir.exists():
-    app.mount("/", StaticFiles(directory=str(frontend_dir), html=True), name="frontend")
 
 app.add_middleware(
     CORSMiddleware,
@@ -118,3 +113,62 @@ async def chat(req: ChatRequest):
             for r in results
         ],
     )
+
+
+@app.delete("/documents/{doc_id}", response_model=DeleteResponse)
+async def delete_document(doc_id: str):
+    """Delete a document and its embeddings from the vector store."""
+    vs = get_store()
+    
+    # Check if document exists by searching for it
+    results = vs.collection.get(where={"doc_id": doc_id}, limit=1)
+    if not results["ids"]:
+        raise HTTPException(404, f"Document {doc_id} not found")
+    
+    # Delete from vector store
+    vs.delete_document(doc_id)
+    
+    # Delete uploaded file
+    file_path = UPLOAD_DIR / f"{doc_id}.pdf"
+    file_path.unlink(missing_ok=True)
+    
+    return DeleteResponse(
+        doc_id=doc_id,
+        deleted=True,
+        message=f"Document {doc_id} and its embeddings deleted successfully"
+    )
+
+
+@app.get("/documents")
+async def list_documents():
+    """List all uploaded documents."""
+    vs = get_store()
+    results = vs.collection.get()
+    
+    # Group by doc_id
+    docs = {}
+    if results["metadatas"]:
+        for meta in results["metadatas"]:
+            doc_id = meta.get("doc_id", "")
+            if doc_id and doc_id not in docs:
+                docs[doc_id] = {"doc_id": doc_id, "chunks": 0}
+            if doc_id:
+                docs[doc_id]["chunks"] += 1
+    
+    # Add filename from upload directory
+    for doc_id, info in docs.items():
+        file_path = UPLOAD_DIR / f"{doc_id}.pdf"
+        if file_path.exists():
+            info["filename"] = file_path.name
+            info["size"] = file_path.stat().st_size
+        else:
+            info["filename"] = "unknown"
+            info["size"] = 0
+    
+    return {"documents": list(docs.values())}
+
+
+# Serve frontend static files — mounted last so it doesn't shadow API routes
+frontend_dir = Path(__file__).parent.parent / "frontend"
+if frontend_dir.exists():
+    app.mount("/", StaticFiles(directory=str(frontend_dir), html=True), name="frontend")
