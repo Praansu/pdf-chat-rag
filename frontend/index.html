@@ -257,15 +257,17 @@
             sendBtn.disabled = true;
             input.disabled = true;
 
-            // Show loading
+            // Create message div for streaming
             const msgDiv = document.createElement('div');
             msgDiv.className = 'message bot';
-            msgDiv.innerHTML = '<div class="bubble">Thinking<span class="loading-dots"></span></div>';
+            msgDiv.innerHTML = '<div class="bubble"></div>';
             document.getElementById('messages').appendChild(msgDiv);
-            msgDiv.scrollIntoView({ behavior: 'smooth' });
+            const bubble = msgDiv.querySelector('.bubble');
+            let sourcesHtml = '';
+            let answerStarted = false;
 
             try {
-                const res = await fetch('/chat', {
+                const res = await fetch('/chat/stream', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ query, doc_id: currentDocId, top_k: 3 }),
@@ -274,18 +276,49 @@
                     const err = await res.json();
                     throw new Error(err.detail || 'Chat failed');
                 }
-                const data = await res.json();
 
-                // Replace loading with answer
-                let sourcesHtml = '';
-                if (data.sources && data.sources.length > 0) {
-                    sourcesHtml = '<div class="sources">Pages: ' +
-                        data.sources.map(s => `<span>p.${s.page_num}</span>`).join('') +
-                        '</div>';
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+
+                    const lines = buffer.split('\n\n');
+                    buffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        const trimmed = line.trim();
+                        if (!trimmed.startsWith('data:')) continue;
+                        const payload = trimmed.slice(5).trim();
+                        if (!payload) continue;
+
+                        const ev = JSON.parse(payload);
+
+                        if (ev.type === 'sources') {
+                            sourcesHtml = '<div class="sources">Pages: ' +
+                                ev.sources.map(s => `<span>p.${s.page_num}</span>`).join('') +
+                                '</div>';
+                        } else if (ev.type === 'chunk') {
+                            if (!answerStarted) {
+                                answerStarted = true;
+                            }
+                            bubble.textContent += ev.content;
+                            msgDiv.scrollIntoView({ behavior: 'smooth' });
+                        } else if (ev.type === 'done') {
+                            // Append sources at the end
+                            if (sourcesHtml) {
+                                bubble.innerHTML += sourcesHtml;
+                            }
+                        } else if (ev.type === 'error') {
+                            throw new Error(ev.error || 'Stream error');
+                        }
+                    }
                 }
-                msgDiv.innerHTML = `<div class="bubble">${escapeHtml(data.answer)}${sourcesHtml}</div>`;
             } catch (err) {
-                msgDiv.innerHTML = `<div class="bubble" style="color:#dc2626;">Error: ${escapeHtml(err.message)}</div>`;
+                bubble.innerHTML = `<span style="color:#dc2626;">Error: ${escapeHtml(err.message)}</span>`;
             }
 
             sendBtn.disabled = false;

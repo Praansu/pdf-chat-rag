@@ -6,7 +6,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .embeddings import VectorStore
@@ -95,11 +95,11 @@ async def chat(req: ChatRequest):
     results = vs.search(req.query, top_k=req.top_k or 3)
 
     if not results:
-        return ChatResponse(answer="No relevant content found in the uploaded document.", sources=[])
+        return ChatResponse(
+            answer="No relevant content found in the uploaded document.", sources=[]
+        )
 
-    context = "\n\n".join(
-        f"[Page {r['page_num']}] {r['text']}" for r in results
-    )
+    context = "\n\n".join(f"[Page {r['page_num']}] {r['text']}" for r in results)
 
     # Import here to avoid circular dependency with models
     from .llm import ask_groq
@@ -109,33 +109,76 @@ async def chat(req: ChatRequest):
     return ChatResponse(
         answer=answer,
         sources=[
-            Source(page_num=r["page_num"], text=r["text"][:200], score=round(r["score"], 3))
+            Source(
+                page_num=r["page_num"], text=r["text"][:200], score=round(r["score"], 3)
+            )
             for r in results
         ],
     )
+
+
+@app.post("/chat/stream")
+async def chat_stream(req: ChatRequest):
+    """Stream chat response as SSE."""
+    if not req.query.strip():
+        raise HTTPException(400, "Query cannot be empty")
+
+    vs = get_store()
+    results = vs.search(req.query, top_k=req.top_k or 3)
+
+    if not results:
+
+        async def empty_gen():
+            yield f"data: {json.dumps({'type': 'error', 'error': 'No relevant content found'})}\n\n"
+
+        return StreamingResponse(empty_gen(), media_type="text/event-stream")
+
+    context = "\n\n".join(f"[Page {r['page_num']}] {r['text']}" for r in results)
+
+    # Send sources first
+    async def stream_gen():
+        sources_data = [
+            {
+                "page_num": r["page_num"],
+                "text": r["text"][:200],
+                "score": round(r["score"], 3),
+            }
+            for r in results
+        ]
+        yield f"data: {json.dumps({'type': 'sources', 'sources': sources_data})}\n\n"
+
+        from .llm import ask_groq_stream
+
+        async for chunk in ask_groq_stream(req.query, context):
+            yield chunk
+
+    return StreamingResponse(stream_gen(), media_type="text/event-stream")
+
+
+import json
 
 
 @app.delete("/documents/{doc_id}", response_model=DeleteResponse)
 async def delete_document(doc_id: str):
     """Delete a document and its embeddings from the vector store."""
     vs = get_store()
-    
+
     # Check if document exists by searching for it
     results = vs.collection.get(where={"doc_id": doc_id}, limit=1)
     if not results["ids"]:
         raise HTTPException(404, f"Document {doc_id} not found")
-    
+
     # Delete from vector store
     vs.delete_document(doc_id)
-    
+
     # Delete uploaded file
     file_path = UPLOAD_DIR / f"{doc_id}.pdf"
     file_path.unlink(missing_ok=True)
-    
+
     return DeleteResponse(
         doc_id=doc_id,
         deleted=True,
-        message=f"Document {doc_id} and its embeddings deleted successfully"
+        message=f"Document {doc_id} and its embeddings deleted successfully",
     )
 
 
@@ -144,7 +187,7 @@ async def list_documents():
     """List all uploaded documents."""
     vs = get_store()
     results = vs.collection.get()
-    
+
     # Group by doc_id
     docs = {}
     if results["metadatas"]:
@@ -154,7 +197,7 @@ async def list_documents():
                 docs[doc_id] = {"doc_id": doc_id, "chunks": 0}
             if doc_id:
                 docs[doc_id]["chunks"] += 1
-    
+
     # Add filename from upload directory
     for doc_id, info in docs.items():
         file_path = UPLOAD_DIR / f"{doc_id}.pdf"
@@ -164,7 +207,7 @@ async def list_documents():
         else:
             info["filename"] = "unknown"
             info["size"] = 0
-    
+
     return {"documents": list(docs.values())}
 
 
