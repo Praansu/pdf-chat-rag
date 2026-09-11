@@ -1,0 +1,44 @@
+name: Bug Report
+description: Report a bug in PDF Chat RAG
+title: "[BUG] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug!
+  - type: input
+    id: version
+    attributes:
+      label: Version/Commit
+      placeholder: "e.g., main branch, commit abc123"
+    required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      placeholder: "Uploaded a PDF, asked a question, got error..."
+    required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      placeholder: |
+        1. Start server
+        2. Upload PDF
+        3. Ask question
+        4. See error
+    required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - PDF processing
+        - RAG/ChromaDB
+        - Groq LLM
+        - Streaming SSE
+        - Frontend/UI
+        - Docker
+        - Other
+    required: true
